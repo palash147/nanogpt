@@ -74,10 +74,15 @@ class Block(nn.Module):
     head_size = n_embd//n_heads
     self.sa_heads = MultiHeadAttention(n_heads, head_size) # 4 heads of 8-dimensional self attention
     self.feed_forward = FeedForward(n_embd)
+    self.ln1 = nn.LayerNorm(n_embd)
+    self.ln2 = nn.LayerNorm(n_embd)
     
   def forward(self, x):
-    x = x + self.sa_heads(x)
-    x = x + self.feed_forward(x)
+    # ToDo - why layer norm before heads and ff.
+    # ToDo - figure out and read about layer normalization why it works and whats the intuition
+    # - https://arxiv.org/abs/1607.06450
+    x = x + self.sa_heads(self.ln1(x))
+    x = x + self.feed_forward(self.ln2(x))
     return x
 
 # point-wise feed forward --> FFN(x) = max(0, xW1 + b1)W2 + b2
@@ -143,6 +148,7 @@ class BigramLanguageModel(nn.Module):
       Block(n_embd, n_heads=4),
       Block(n_embd, n_heads=4),
       Block(n_embd, n_heads=4),
+      nn.LayerNorm(n_embd) # why is this needed?
     )
     self.lm_head = nn.Linear(n_embd, vocab_size)
 

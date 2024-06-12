@@ -67,13 +67,28 @@ def estimate_loss():
     model.train()
     return out
 
+class Block(nn.Module):
+  
+  def __init__(self, n_embd, n_heads):
+    super().__init__()
+    head_size = n_embd//n_heads
+    self.sa_heads = MultiHeadAttention(n_heads, head_size) # 4 heads of 8-dimensional self attention
+    self.feed_forward = FeedForward(n_embd)
+    
+  def forward(self, x):
+    x = x + self.sa_heads(x)
+    x = x + self.feed_forward(x)
+    return x
+
+# point-wise feed forward --> FFN(x) = max(0, xW1 + b1)W2 + b2
 class FeedForward(nn.Module):
   
   def __init__(self, n_embd):
     super().__init__()
     self.net = nn.Sequential(
-      nn.Linear(n_embd, n_embd),
-      nn.ReLU()
+      nn.Linear(n_embd, 4 * n_embd),
+      nn.ReLU(),
+      nn.Linear(4 * n_embd, n_embd)
     )
     
   def forward(self, x):
@@ -111,9 +126,11 @@ class MultiHeadAttention(nn.Module):
   def __init__(self, num_heads, head_size):
     super().__init__()
     self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    self.proj = nn.Linear(n_embd, n_embd)
     
   def forward(self, x):
-    return torch.cat([h(x) for h in self.heads], dim=-1)
+    out = torch.cat([h(x) for h in self.heads], dim=-1)
+    return self.proj(out)
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -122,8 +139,11 @@ class BigramLanguageModel(nn.Module):
     super().__init__()
     self.token_embedding = nn.Embedding(vocab_size, n_embd)
     self.position_embedding = nn.Embedding(block_size, n_embd)
-    self.sa_heads = MultiHeadAttention(4, n_embd//4) # 4 heads of 8-dimensional self attention
-    self.feed_forward = FeedForward(n_embd)
+    self.blocks = nn.Sequential(
+      Block(n_embd, n_heads=4),
+      Block(n_embd, n_heads=4),
+      Block(n_embd, n_heads=4),
+    )
     self.lm_head = nn.Linear(n_embd, vocab_size)
 
   def forward(self, x, targets=None):
@@ -131,8 +151,7 @@ class BigramLanguageModel(nn.Module):
     tok_embd = self.token_embedding(x) # converts shape(B, T) to shape(B, T, C) | B-batch, T-time(context) dimension, C-Channel(Embedding_size)
     pos_embd = self.position_embedding(torch.arange(T, device=device)) # shape : (T, C) # C here is n_embd
     x = tok_embd + pos_embd # (B,T,C) + (T,C) : implicit broadcasting
-    x = self.sa_heads(x)
-    x = self.feed_forward(x)
+    x = self.blocks(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
     
     loss = None

@@ -67,6 +67,18 @@ def estimate_loss():
     model.train()
     return out
 
+class FeedForward(nn.Module):
+  
+  def __init__(self, n_embd):
+    super().__init__()
+    self.net = nn.Sequential(
+      nn.Linear(n_embd, n_embd),
+      nn.ReLU()
+    )
+    
+  def forward(self, x):
+    return self.net(x)
+
 class Head(nn.Module):
   
   def __init__(self, head_size):
@@ -111,6 +123,7 @@ class BigramLanguageModel(nn.Module):
     self.token_embedding = nn.Embedding(vocab_size, n_embd)
     self.position_embedding = nn.Embedding(block_size, n_embd)
     self.sa_heads = MultiHeadAttention(4, n_embd//4) # 4 heads of 8-dimensional self attention
+    self.feed_forward = FeedForward(n_embd)
     self.lm_head = nn.Linear(n_embd, vocab_size)
 
   def forward(self, x, targets=None):
@@ -119,6 +132,7 @@ class BigramLanguageModel(nn.Module):
     pos_embd = self.position_embedding(torch.arange(T, device=device)) # shape : (T, C) # C here is n_embd
     x = tok_embd + pos_embd # (B,T,C) + (T,C) : implicit broadcasting
     x = self.sa_heads(x)
+    x = self.feed_forward(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
     
     loss = None

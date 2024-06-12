@@ -7,7 +7,7 @@ batch_size = 32
 block_size = 8
 max_steps = 10000
 eval_interval = 100 # after how many steps we should evaluate train & val loss
-learning_rate = 1e-2
+learning_rate = 1e-3
 # use device -
 # 1. when creating model to transfer parameters
 # 2. when fetching batch data for training
@@ -67,12 +67,39 @@ def estimate_loss():
     model.train()
     return out
 
+class Head(nn.Module):
+  def __init__(self, head_size):
+    super().__init__()
+    self.key = nn.Linear(n_embd, head_size, bias=False)
+    self.query = nn.Linear(n_embd, head_size, bias=False)
+    self.value = nn.Linear(n_embd, head_size, bias=False)
+    self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size))) # because tril is not paramter to model. just constant save once.
+  
+  def forward(self, x):
+    B, T, C = x.shape
+    k = self.key(x)    # (B,T,head_size)
+    q = self.query(x)  # (B,T,head_size)
+    wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # k.shape[-1] == head_size
+    # (B,T,h)@(B,h,T) --> (B,T,T) | now, this `wei` is interaction matrix not just zero or uniform
+    # scaling is to control variance of `wei` before feeding to softmax. Otherwise if this scaling is not done, weights will be very high and softmax will cnvert focus to very small number of other tokens
+    # now, we can do the same ops - masking, softmax & multiplication (but to v similar to  k & q)
+    
+    wei = wei.masked_fill(self.tril[:T,:T]==0, value=float('-inf')) # this masking is what makes this as decoder. Otherwise, encoder can look upto all chars in given input
+                                                        # also, difference in decoder is it has another sublayer which takers encoder's input in 2 of k,q,v (which ones?). Also, only in first layer or all layers? ToDo - figure out
+    wei = torch.softmax(wei, dim=-1) # (B,T,T)
+
+    v = self.value(x) # (B,T,C) -> (B,T,h)
+    
+    out = wei @ v # (B,T,T)@(B,T,h) --> (B,T,h)
+    return out
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
   def __init__(self):
     super().__init__()
     self.token_embedding = nn.Embedding(vocab_size, n_embd)
     self.position_embedding = nn.Embedding(block_size, n_embd)
+    self.sa_head = Head(n_embd)
     self.lm_head = nn.Linear(n_embd, vocab_size)
 
   def forward(self, x, targets=None):
@@ -80,7 +107,7 @@ class BigramLanguageModel(nn.Module):
     tok_embd = self.token_embedding(x) # converts shape(B, T) to shape(B, T, C) | B-batch, T-time(context) dimension, C-Channel(Embedding_size)
     pos_embd = self.position_embedding(torch.arange(T, device=device)) # shape : (T, C) # C here is n_embd
     x = tok_embd + pos_embd # (B,T,C) + (T,C) : implicit broadcasting
-    
+    x = self.sa_head(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
     
     loss = None
@@ -96,11 +123,13 @@ class BigramLanguageModel(nn.Module):
 
   def generate(self, idx, max_new_tokens):
     for _ in range(max_new_tokens):
+      idx = idx[:, -block_size:]
       logits, _ = self(idx)             # forward pass to get logits, loss is not needed
       logits = logits[:, -1, :]         # logits will be of shape B,T,C but we only care about last character i.e. last T
       probs = F.softmax(logits, dim=1)  # prob using softmax along the channel dimension
       next_idx = torch.multinomial(probs, 1)
       # that is, we are training with (4,8) -> (4,8) shape. But feeding(1, +inf) shape to get (1, +inf) out and then just consume only last T.
+      # fixed by cropping index to maximum block_size
       # validate this fact
       #print(f"debug | {decode(idx[0].numpy())} --> {decode([next_idx[0].item()])}") # 0-index to take from first batch
       idx = torch.cat([idx, next_idx], dim=1)

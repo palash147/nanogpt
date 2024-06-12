@@ -68,6 +68,7 @@ def estimate_loss():
     return out
 
 class Head(nn.Module):
+  
   def __init__(self, head_size):
     super().__init__()
     self.key = nn.Linear(n_embd, head_size, bias=False)
@@ -93,13 +94,23 @@ class Head(nn.Module):
     out = wei @ v # (B,T,T)@(B,T,h) --> (B,T,h)
     return out
 
+class MultiHeadAttention(nn.Module):
+  
+  def __init__(self, num_heads, head_size):
+    super().__init__()
+    self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+    
+  def forward(self, x):
+    return torch.cat([h(x) for h in self.heads], dim=-1)
+
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
+  
   def __init__(self):
     super().__init__()
     self.token_embedding = nn.Embedding(vocab_size, n_embd)
     self.position_embedding = nn.Embedding(block_size, n_embd)
-    self.sa_head = Head(n_embd)
+    self.sa_heads = MultiHeadAttention(4, n_embd//4) # 4 heads of 8-dimensional self attention
     self.lm_head = nn.Linear(n_embd, vocab_size)
 
   def forward(self, x, targets=None):
@@ -107,7 +118,7 @@ class BigramLanguageModel(nn.Module):
     tok_embd = self.token_embedding(x) # converts shape(B, T) to shape(B, T, C) | B-batch, T-time(context) dimension, C-Channel(Embedding_size)
     pos_embd = self.position_embedding(torch.arange(T, device=device)) # shape : (T, C) # C here is n_embd
     x = tok_embd + pos_embd # (B,T,C) + (T,C) : implicit broadcasting
-    x = self.sa_head(x)
+    x = self.sa_heads(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
     
     loss = None
@@ -123,8 +134,8 @@ class BigramLanguageModel(nn.Module):
 
   def generate(self, idx, max_new_tokens):
     for _ in range(max_new_tokens):
-      idx = idx[:, -block_size:]
-      logits, _ = self(idx)             # forward pass to get logits, loss is not needed
+      idx_cond = idx[:, -block_size:]
+      logits, _ = self(idx_cond)             # forward pass to get logits, loss is not needed
       logits = logits[:, -1, :]         # logits will be of shape B,T,C but we only care about last character i.e. last T
       probs = F.softmax(logits, dim=1)  # prob using softmax along the channel dimension
       next_idx = torch.multinomial(probs, 1)

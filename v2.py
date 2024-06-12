@@ -3,18 +3,22 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # hyperparameters
-batch_size = 32
-block_size = 8
-max_steps = 10000
-eval_interval = 100 # after how many steps we should evaluate train & val loss
-learning_rate = 1e-3
+# ~~~~~~~~~~~~~~~~~~~~ too large for cpu? check before running ~~~~~~~~~~~~
+batch_size = 64
+block_size = 256
+max_steps = 5000
+eval_interval = 500 # after how many steps we should evaluate train & val loss
+learning_rate = 3e-4
 # use device -
 # 1. when creating model to transfer parameters
 # 2. when fetching batch data for training
 # 3. when generating data for sample/output creation
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200 # how many batches to be evaluated
-n_embd = 32
+n_embd = 384
+n_heads = 6
+n_layer = 6
+dropout = 0.2
 # ----------------
 
 torch.manual_seed(1337)
@@ -95,9 +99,10 @@ class FeedForward(nn.Module):
       nn.ReLU(),
       nn.Linear(4 * n_embd, n_embd)
     )
+    self.dropout = nn.Dropout(dropout)
     
   def forward(self, x):
-    return self.net(x)
+    return self.dropout(self.net(x))
 
 class Head(nn.Module):
   
@@ -107,6 +112,8 @@ class Head(nn.Module):
     self.query = nn.Linear(n_embd, head_size, bias=False)
     self.value = nn.Linear(n_embd, head_size, bias=False)
     self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size))) # because tril is not paramter to model. just constant save once.
+    
+    self.dropout = nn.Dropout(dropout)
   
   def forward(self, x):
     B, T, C = x.shape
@@ -118,9 +125,9 @@ class Head(nn.Module):
     # now, we can do the same ops - masking, softmax & multiplication (but to v similar to  k & q)
     
     wei = wei.masked_fill(self.tril[:T,:T]==0, value=float('-inf')) # this masking is what makes this as decoder. Otherwise, encoder can look upto all chars in given input
-                                                        # also, difference in decoder is it has another sublayer which takers encoder's input in 2 of k,q,v (which ones?). Also, only in first layer or all layers? ToDo - figure out
+                                                        # also, difference in decoder is it has another sublayer (only used if encoder is also in place) which takes encoder's input in k & v, and q remains from decoder only. Also, only in first layer or all layers? ToDo - figure out
     wei = torch.softmax(wei, dim=-1) # (B,T,T)
-
+    wei = self.dropout(wei)
     v = self.value(x) # (B,T,C) -> (B,T,h)
     
     out = wei @ v # (B,T,T)@(B,T,h) --> (B,T,h)
@@ -132,10 +139,13 @@ class MultiHeadAttention(nn.Module):
     super().__init__()
     self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
     self.proj = nn.Linear(n_embd, n_embd)
+    self.dropout = nn.Dropout(dropout)
     
   def forward(self, x):
     out = torch.cat([h(x) for h in self.heads], dim=-1)
-    return self.proj(out)
+    out = self.proj(out)
+    out = self.dropout(out)
+    return out
 
 # super simple bigram model
 class BigramLanguageModel(nn.Module):
@@ -144,12 +154,8 @@ class BigramLanguageModel(nn.Module):
     super().__init__()
     self.token_embedding = nn.Embedding(vocab_size, n_embd)
     self.position_embedding = nn.Embedding(block_size, n_embd)
-    self.blocks = nn.Sequential(
-      Block(n_embd, n_heads=4),
-      Block(n_embd, n_heads=4),
-      Block(n_embd, n_heads=4),
-      nn.LayerNorm(n_embd) # why is this needed?
-    )
+    self.blocks = nn.Sequential(*[Block(n_embd, n_heads=n_heads) for _ in range(n_layer)]) # * --> unrolling the list
+    self.ln_f = nn.LayerNorm(n_embd) # why is this needed? final layer norm
     self.lm_head = nn.Linear(n_embd, vocab_size)
 
   def forward(self, x, targets=None):
@@ -158,6 +164,7 @@ class BigramLanguageModel(nn.Module):
     pos_embd = self.position_embedding(torch.arange(T, device=device)) # shape : (T, C) # C here is n_embd
     x = tok_embd + pos_embd # (B,T,C) + (T,C) : implicit broadcasting
     x = self.blocks(x)
+    x = self.ln_f(x)
     logits = self.lm_head(x) # (B, T, vocab_size)
     
     loss = None

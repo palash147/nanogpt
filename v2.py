@@ -147,8 +147,8 @@ class MultiHeadAttention(nn.Module):
     out = self.dropout(out)
     return out
 
-# super simple bigram model
-class BigramLanguageModel(nn.Module):
+# super simple/nano gpt language model
+class SimpleGPTLanguageModel(nn.Module):
   
   def __init__(self):
     super().__init__()
